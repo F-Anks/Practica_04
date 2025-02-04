@@ -124,6 +124,61 @@ app.post("/logout", (req, res) => {
     res.status(200).json({ message: "Logout exitoso." });
 });
 
+
+// Actualización de la sesión
+app.post("/update", (req, res) => {
+    const { sessionId, email, nickname } = req.body;
+
+    if (!sessionId || !sessions[sessionId]) {
+        return res.status(404).json({ message: "No existe una sesión activa." });
+    }
+
+    const now = moment().tz(TIMEZONE);
+    if (email) sessions[sessionId].email = email;
+    if (nickname) sessions[sessionId].nickname = nickname;
+    sessions[sessionId].lastAccessedAt = now;
+
+    res.status(200).json({
+        message: "Sesión actualizada correctamente.",
+        session: {
+            sessionId,
+            email: sessions[sessionId].email,
+            nickname: sessions[sessionId].nickname,
+            createdAt: sessions[sessionId].createdAt,
+            lastAccessedAt: sessions[sessionId].lastAccessedAt.format("YYYY-MM-DD HH:mm:ss"),
+        },
+    });
+});
+
+// Estado de la sesión
+app.get("/status", (req, res) => {
+    const sessionId = req.query.sessionId;
+
+    // Obtener la IP y MAC del servidor
+    const { serverIp, serverMac } = getServerNetworkInfo();
+
+    if (!sessionId || !sessions[sessionId]) {
+        return res.status(404).json({ message: "No hay sesión activa." });
+    }
+
+    const now = moment().tz(TIMEZONE);
+    const session = sessions[sessionId];
+    const lastAccessedAt = moment(session.lastAccessedAt);
+    const inactivityDuration = moment.duration(now.diff(lastAccessedAt));
+    const sessionDuration = moment.duration(now.diff(moment(session.createdAt)));
+
+    res.status(200).json({
+        message: "Sesión activa.",
+        session: {
+            ...session,
+            serverIp,
+            serverMac, // MAC del servidor
+            inactivity: `${inactivityDuration.minutes()} minutos y ${inactivityDuration.seconds()} segundos`,
+            totalDuration: `${sessionDuration.hours()} horas, ${sessionDuration.minutes()} minutos y ${sessionDuration.seconds()} segundos`,
+        },
+    });
+});
+
 // Iniciar servidor
 const PORT = 3000;
 app.listen(PORT, () => {
