@@ -24,6 +24,106 @@ app.get("/welcome", (req, res) => {
     });
 });
 
+
+// Zona horaria por defecto
+const TIMEZONE = "America/Mexico_City"; // Ajusta según tu región
+
+
+// Sesiones almacenadas en memoria
+const sessions = {};
+
+// Tiempo máximo de inactividad en milisegundos (2 minutos)
+const MAX_INACTIVITY_TIME = 2 * 60 * 1000;
+
+// Intervalo para limpiar sesiones inactivas (cada minuto)
+setInterval(() => {
+    const now = moment().tz(TIMEZONE);
+    for (const sessionId in sessions) {
+        const session = sessions[sessionId];
+        const lastAccessedAt = moment(session.lastAccessedAt);
+        const inactivityDuration = now.diff(lastAccessedAt);
+
+        if (inactivityDuration > MAX_INACTIVITY_TIME) {
+            console.log(`Eliminando sesión por inactividad: ${sessionId}`);
+            delete sessions[sessionId];
+        }
+    }
+}, 60 * 1000); // Revisión cada minuto
+
+
+// Función de utilidad para obtener la IP del cliente
+const getClientIp = (req) => {
+    let ip = req.headers["x-forwarded-for"] ||
+            req.connection.remoteAddress ||
+            req.socket.remoteAddress ||
+            req.connection.socket?.remoteAddress;
+
+    // Si la IP tiene el prefijo "::ffff:", eliminarlo para obtener solo IPv4
+    if (ip && ip.startsWith("::ffff:")) {
+        ip = ip.substring(7); // Elimina "::ffff:"
+    }
+
+    return ip;
+};
+
+
+const getServerNetworkInfo = () => {
+    const interfaces = os.networkInterfaces();
+    for (const name in interfaces) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === "IPv4" && !iface.internal) {
+                return { serverIp: iface.address, serverMac: iface.mac };
+            }
+        }
+    }
+    return { serverIp: "0.0.0.0", serverMac: "00:00:00:00:00:00" }; // Fallback en caso de error
+};
+
+// Login Endpoint
+app.post("/login", (req, res) => {
+    const { email, nickname, macAddress } = req.body;
+
+    if (!email || !nickname || !macAddress) {
+        return res.status(400).json({ message: "Falta algún campo." });
+    }
+
+    const sessionId = uuidv4();
+    const now = moment().tz(TIMEZONE);
+    const clientIp = getClientIp(req); // Obtener la IP del cliente
+
+    sessions[sessionId] = {
+        sessionId,
+        email,
+        nickname,
+        macAddress,
+        ip: clientIp, // Guardar la IP del cliente
+        createdAt: now.format("YYYY-MM-DD HH:mm:ss"),
+        lastAccessedAt: now,
+    };
+
+    res.status(200).json({
+        message: "Inicio de sesión exitoso.",
+        sessionId,
+    });
+});
+
+// Logout Endpoint
+app.post("/logout", (req, res) => {
+    const { sessionId } = req.body;
+
+    if (!sessionId || !sessions[sessionId]) {
+        return res.status(404).json({ message: "No se ha encontrado una sesión activa." });
+    }
+
+    delete sessions[sessionId];
+    req.session?.destroy((err) => {
+        if (err) {
+            return res.status(500).send("Error al cerrar la sesión.");
+        }
+    });
+    res.status(200).json({ message: "Logout exitoso." });
+});
+
 // Iniciar servidor
 const PORT = 3000;
 app.listen(PORT, () => {
