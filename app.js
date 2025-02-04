@@ -1,7 +1,11 @@
 import express from "express";
 import session from "express-session";
 import bodyParser from "body-parser";
+import moment from "moment-timezone";
+import { v4 as uuidv4 } from "uuid";
 import cors from "cors";
+import os from "os";
+
 
 const app = express();
 app.use(express.json());
@@ -16,14 +20,6 @@ app.use(
         cookie: { maxAge: 5 * 60 * 1000 }, // 5 minutos
     })
 );
-// Ruta raíz
-app.get("/welcome", (req, res) => {
-    return res.status(200).json({
-        message: "Bienvenido a la API control de sessiones",
-        author: "Francisco Garcia Garcia",
-    });
-});
-
 
 // Zona horaria por defecto
 const TIMEZONE = "America/Mexico_City"; // Ajusta según tu región
@@ -124,7 +120,6 @@ app.post("/logout", (req, res) => {
     res.status(200).json({ message: "Logout exitoso." });
 });
 
-
 // Actualización de la sesión
 app.post("/update", (req, res) => {
     const { sessionId, email, nickname } = req.body;
@@ -176,6 +171,51 @@ app.get("/status", (req, res) => {
             inactivity: `${inactivityDuration.minutes()} minutos y ${inactivityDuration.seconds()} segundos`,
             totalDuration: `${sessionDuration.hours()} horas, ${sessionDuration.minutes()} minutos y ${sessionDuration.seconds()} segundos`,
         },
+    });
+});
+
+// Endpoint para obtener la lista de sesiones activas
+app.get("/sessions", (req, res) => {
+    if (Object.keys(sessions).length === 0) {
+        return res.status(200).json({ message: "No hay sesiones activas en este momento." });
+    }
+
+    // Obtener la IP y MAC del servidor
+    const { serverIp, serverMac } = getServerNetworkInfo();
+
+    // Generar un resumen de las sesiones activas
+    const now = moment().tz(TIMEZONE);
+    const sessionList = Object.values(sessions).map((session) => {
+        const lastAccessedAt = moment(session.lastAccessedAt);
+        const inactivityDuration = moment.duration(now.diff(lastAccessedAt));
+        const sessionDuration = moment.duration(now.diff(moment(session.createdAt)));
+
+        return {
+            sessionId: session.sessionId,
+            email: session.email,
+            nickname: session.nickname,
+            ip: session.ip,
+            serverIp,
+            macAddress: session.macAddress,
+            serverMac,
+            createdAt: session.createdAt,
+            inactivity: `${inactivityDuration.minutes()} minutos y ${inactivityDuration.seconds()} segundos`,
+            totalDuration: `${sessionDuration.hours()} horas, ${sessionDuration.minutes()} minutos y ${sessionDuration.seconds()} segundo`,
+            lastAccessedAt: lastAccessedAt.format("YYYY-MM-DD HH:mm:ss"),
+        };
+    });
+
+    res.status(200).json({
+        message: "Lista de sesiones activas:",
+        activeSessions: sessionList,
+    });
+});
+
+// Ruta raíz
+app.get("/welcome", (req, res) => {
+    return res.status(200).json({
+        message: "Bienvenido a la API control de sessiones",
+        author: "Francisco Garcia Garcia",
     });
 });
 
