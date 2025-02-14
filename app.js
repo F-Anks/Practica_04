@@ -1,226 +1,122 @@
-import express from "express";
-import session from "express-session";
-import bodyParser from "body-parser";
-import moment from "moment-timezone";
-import { v4 as uuidv4 } from "uuid";
-import cors from "cors";
-import os from "os";
+import express from 'express';
+import session from 'express-session';
+import { v4 as uuidv4 } from 'uuid';
+import os from 'os';
+import moment from 'moment-timezone';
 
+import './database.js';
+import Session from './models/Session.js';
 
+const sessions = new Map();
 const app = express();
+const PORT = 3000;
+
 app.use(express.json());
-app.use(cors());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true }));
 
 app.use(
     session({
-        secret: "P4-FGG#TirandoCodigoDSM-SesionesHTTP-VariablesDeSesion",
+        secret: "P6-FGG#TirandoCodigoDSM-SesionesHTTP-Implementacion de la Persistencia de los datos de sesion en una Base de Datos NoRelacional.",
         resave: false,
         saveUninitialized: false,
-        cookie: { maxAge: 5 * 60 * 1000 }, // 5 minutos
+        cookie: { maxAge: 5 * 60 * 1000 }
     })
 );
 
-// Zona horaria por defecto
-const TIMEZONE = "America/Mexico_City"; // Ajusta según tu región
+const getCDMXDateTime = () => moment().tz('America/Mexico_City').format('DD-MM-YYYY HH:mm:ss');
 
+const calculateInactivityTime = (lastAccessed) => {
+    try {
+        const now = moment().tz('America/Mexico_City');
+        const lastAccess = moment.tz(lastAccessed, 'DD-MM-YYYY HH:mm:ss', 'America/Mexico_City');
+        const diffMs = now.diff(lastAccess);
+        const duration = moment.duration(diffMs);
 
-// Sesiones almacenadas en memoria
-const sessions = {};
-
-// Tiempo máximo de inactividad en milisegundos (2 minutos)
-const MAX_INACTIVITY_TIME = 2 * 60 * 1000;
-
-// Intervalo para limpiar sesiones inactivas (cada minuto)
-setInterval(() => {
-    const now = moment().tz(TIMEZONE);
-    for (const sessionId in sessions) {
-        const session = sessions[sessionId];
-        const lastAccessedAt = moment(session.lastAccessedAt);
-        const inactivityDuration = now.diff(lastAccessedAt);
-
-        if (inactivityDuration > MAX_INACTIVITY_TIME) {
-            console.log(`Eliminando sesión por inactividad: ${sessionId}`);
-            delete sessions[sessionId];
-        }
+        return {
+            hours: Math.floor(duration.asHours()),
+            minutes: duration.minutes(),
+            seconds: duration.seconds(),
+            formatted: `${Math.floor(duration.asHours())}h ${duration.minutes()}m ${duration.seconds()}s`
+        };
+    } catch (error) {
+        console.error('Error calculating inactivity time:', error);
+        return { hours: 0, minutes: 0, seconds: 0, formatted: '0h 0m 0s' };
     }
-}, 60 * 1000); // Revisión cada minuto
-
-
-// Función de utilidad para obtener la IP del cliente
-const getClientIp = (req) => {
-    let ip = req.headers["x-forwarded-for"] ||
-            req.connection.remoteAddress ||
-            req.socket.remoteAddress ||
-            req.connection.socket?.remoteAddress;
-
-    // Si la IP tiene el prefijo "::ffff:", eliminarlo para obtener solo IPv4
-    if (ip && ip.startsWith("::ffff:")) {
-        ip = ip.substring(7); // Elimina "::ffff:"
-    }
-
-    return ip;
 };
 
-
-const getServerNetworkInfo = () => {
-    const interfaces = os.networkInterfaces();
-    for (const name in interfaces) {
-        for (const iface of interfaces[name]) {
-            if (iface.family === "IPv4" && !iface.internal) {
-                return { serverIp: iface.address, serverMac: iface.mac };
+const getServerInfo = () => {
+    const networkInterfaces = os.networkInterfaces();
+    for (const interfaceName in networkInterfaces) {
+        for (const iface of networkInterfaces[interfaceName]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                return { ip: iface.address, mac: iface.mac };
             }
         }
     }
-    return { serverIp: "0.0.0.0", serverMac: "00:00:00:00:00:00" }; // Fallback en caso de error
+    return { ip: null, mac: null };
 };
 
-// Login Endpoint
-app.post("/login", (req, res) => {
-    const { email, nickname, macAddress } = req.body;
+const getClientInfo = (req) => {
+    let clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress || req.connection.socket?.remoteAddress || '0.0.0.0';
+    if (clientIP.includes('::ffff:')) clientIP = clientIP.replace('::ffff:', '');
+    return { ip: clientIP === '::1' || clientIP === '127.0.0.1' ? getServerInfo().ip : clientIP };
+};
 
-    if (!email || !nickname || !macAddress) {
-        return res.status(400).json({ message: "Falta algún campo." });
-    }
-
-    const sessionId = uuidv4();
-    const now = moment().tz(TIMEZONE);
-    const clientIp = getClientIp(req); // Obtener la IP del cliente
-
-    sessions[sessionId] = {
-        sessionId,
-        email,
-        nickname,
-        macAddress,
-        ip: clientIp, // Guardar la IP del cliente
-        createdAt: now.format("YYYY-MM-DD HH:mm:ss"),
-        lastAccessedAt: now,
-    };
-
-    res.status(200).json({
-        message: "Inicio de sesión exitoso.",
-        sessionId,
-    });
+app.get('/welcome', (req, res) => {
+    res.status(200).json({ message: "Welcome to API for Control  of Sesions", author: "Francisco Garcia Garcia" });
 });
 
-// Logout Endpoint
-app.post("/logout", (req, res) => {
-    const { sessionId } = req.body;
+app.post('/login', async (req, res) => {
+    try {
+        const { email, nickname, macAddress } = req.body;
+        if (!email || !nickname || !macAddress) return res.status(400).json({ message: "Required fields are expected" });
 
-    if (!sessionId || !sessions[sessionId]) {
-        return res.status(404).json({ message: "No se ha encontrado una sesión activa." });
-    }
-
-    delete sessions[sessionId];
-    req.session?.destroy((err) => {
-        if (err) {
-            return res.status(500).send("Error al cerrar la sesión.");
-        }
-    });
-    res.status(200).json({ message: "Logout exitoso." });
-});
-
-// Actualización de la sesión
-app.post("/update", (req, res) => {
-    const { sessionId, email, nickname } = req.body;
-
-    if (!sessionId || !sessions[sessionId]) {
-        return res.status(404).json({ message: "No existe una sesión activa." });
-    }
-
-    const now = moment().tz(TIMEZONE);
-    if (email) sessions[sessionId].email = email;
-    if (nickname) sessions[sessionId].nickname = nickname;
-    sessions[sessionId].lastAccessedAt = now;
-
-    res.status(200).json({
-        message: "Sesión actualizada correctamente.",
-        session: {
-            sessionId,
-            email: sessions[sessionId].email,
-            nickname: sessions[sessionId].nickname,
-            createdAt: sessions[sessionId].createdAt,
-            lastAccessedAt: sessions[sessionId].lastAccessedAt.format("YYYY-MM-DD HH:mm:ss"),
-        },
-    });
-});
-
-// Estado de la sesión
-app.get("/status", (req, res) => {
-    const sessionId = req.query.sessionId;
-
-    // Obtener la IP y MAC del servidor
-    const { serverIp, serverMac } = getServerNetworkInfo();
-
-    if (!sessionId || !sessions[sessionId]) {
-        return res.status(404).json({ message: "No hay sesión activa." });
-    }
-
-    const now = moment().tz(TIMEZONE);
-    const session = sessions[sessionId];
-    const lastAccessedAt = moment(session.lastAccessedAt);
-    const inactivityDuration = moment.duration(now.diff(lastAccessedAt));
-    const sessionDuration = moment.duration(now.diff(moment(session.createdAt)));
-
-    res.status(200).json({
-        message: "Sesión activa.",
-        session: {
-            ...session,
-            serverIp,
-            serverMac, // MAC del servidor
-            inactivity: `${inactivityDuration.minutes()} minutos y ${inactivityDuration.seconds()} segundos`,
-            totalDuration: `${sessionDuration.hours()} horas, ${sessionDuration.minutes()} minutos y ${sessionDuration.seconds()} segundos`,
-        },
-    });
-});
-
-// Endpoint para obtener la lista de sesiones activas
-app.get("/sessions", (req, res) => {
-    if (Object.keys(sessions).length === 0) {
-        return res.status(200).json({ message: "No hay sesiones activas en este momento." });
-    }
-
-    // Obtener la IP y MAC del servidor
-    const { serverIp, serverMac } = getServerNetworkInfo();
-
-    // Generar un resumen de las sesiones activas
-    const now = moment().tz(TIMEZONE);
-    const sessionList = Object.values(sessions).map((session) => {
-        const lastAccessedAt = moment(session.lastAccessedAt);
-        const inactivityDuration = moment.duration(now.diff(lastAccessedAt));
-        const sessionDuration = moment.duration(now.diff(moment(session.createdAt)));
-
-        return {
-            sessionId: session.sessionId,
-            email: session.email,
-            nickname: session.nickname,
-            ip: session.ip,
-            serverIp,
-            macAddress: session.macAddress,
-            serverMac,
-            createdAt: session.createdAt,
-            inactivity: `${inactivityDuration.minutes()} minutos y ${inactivityDuration.seconds()} segundos`,
-            totalDuration: `${sessionDuration.hours()} horas, ${sessionDuration.minutes()} minutos y ${sessionDuration.seconds()} segundo`,
-            lastAccessedAt: lastAccessedAt.format("YYYY-MM-DD HH:mm:ss"),
+        const sessionData = {
+            sessionId: uuidv4(),
+            email,
+            nickname,
+            clientInfo: { ip: getClientInfo(req).ip, mac: macAddress },
+            serverInfo: getServerInfo(),
+            status: 'Activa',
+            lastAccesed: getCDMXDateTime(),
+            createdAt: getCDMXDateTime(),
+            updatedAt: getCDMXDateTime()
         };
-    });
 
-    res.status(200).json({
-        message: "Lista de sesiones activas:",
-        activeSessions: sessionList,
-    });
+        const session = new Session(sessionData);
+        await session.save();
+        req.session.userSession = session;
+
+        res.status(200).json({ message: "you are login successfully", sessionId: session.sessionId });
+    } catch (error) {
+        console.error('Error en login:', error);
+        res.status(500).json({ message: "failed to login", error: error.message });
+    }
 });
 
-// Ruta raíz
-app.get("/welcome", (req, res) => {
-    return res.status(200).json({
-        message: "Bienvenido a la API control de sessiones",
-        author: "Francisco Garcia Garcia",
-    });
+app.post("/logout", async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+        const session = await Session.findOne({ sessionId });
+        if (!session) return res.status(404).json({ message: "No active session found." });
+
+        session.status = 'Finished';
+        session.lastAccesed = getCDMXDateTime();
+        await session.save();
+
+        req.session.destroy((err) => {
+            if (err) return res.status(500).json({ message: 'Error to logout' });
+            res.status(200).json({ message: "Logout successfully" });
+        });
+    } catch (error) {
+        console.error('Error in logout:', error);
+        res.status(500).json({ message: "Error to logout", error: error.message });
+    }
 });
 
-// Iniciar servidor
-const PORT = 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor ejecutándose en http://localhost:${PORT}`);
+    console.log(`Servidor iniciado en http://localhost:${PORT}`);
+    console.log(`Información del servidor:`, getServerInfo());
 });
+
+export default app;
